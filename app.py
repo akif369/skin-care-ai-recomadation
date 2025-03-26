@@ -71,12 +71,15 @@ def get_recommendations(skin_concerns, routine_steps, skin_tone, acne_level, tex
 # Main Streamlit app
 def main():
     st.title("💖 Personalized Skin Care Routine")
-    st.markdown("Upload a selfie to get personalized skin care recommendations.")
+    st.markdown("Upload a selfie or take a picture to get personalized skin care recommendations.")
 
     uploaded_file = st.file_uploader("Upload a selfie", type=["jpg", "jpeg", "png"])
+    camera_image = st.camera_input("Or take a picture")
     
-    if uploaded_file is not None:
-        st.image(uploaded_file, caption='Uploaded Image.', use_column_width=True)
+    image = uploaded_file if uploaded_file else camera_image
+    
+    if image is not None:
+        st.image(image, caption='Uploaded Image.', use_column_width=True)
 
     skin_type = st.radio("Select your skin type:", ("Normal", "Dry", "Oily", "Combination", "Sensitive"))
     skin_tone = st.selectbox("Select your skin tone:", ("Medium", "Olive", "Dark", "Deep"))
@@ -98,10 +101,12 @@ def main():
             <style>
                 .product-container {
                     display: grid;
+                    grid-auto-flow: row;
                     grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
                     gap: 20px;
                     justify-content: center;
                     align-items: start;
+                    width:full;
                 }
                 .product-card {
                     border: 1px solid #e0e0e0;
