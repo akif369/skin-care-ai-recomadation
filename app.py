@@ -1,74 +1,236 @@
+from random import shuffle, choices
 import streamlit as st
 import requests
 from bs4 import BeautifulSoup
+from collections import defaultdict
 
-# Function to scrape skincare products from Nykaa
+# Function to scrape skincare products from multiple websites
 def scrape_products(query, limit=3):
-    search_url = f"https://www.nykaa.com/search/result/?q={query.replace(' ', '%20')}"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Referer": "https://www.nykaa.com/"
-    }
+    all_products = []
     
-    response = requests.get(search_url, headers=headers)
-    if response.status_code != 200:
-        return []
-    
-    soup = BeautifulSoup(response.text, 'html.parser')
-    product_list = []
-    
-    for product in soup.find_all("div", class_="css-d5z3ro", limit=limit):
+    # 1. Nykaa Scraper
+    def scrape_nykaa(query, limit):
+        search_url = f"https://www.nykaa.com/search/result/?q={query.replace(' ', '%20')}"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://www.nykaa.com/"
+        }
+        
         try:
-            name = product.find("div", class_="css-xrzmfa").text.strip()
-            price = product.find("span", class_="css-111z9ua").text.strip()
-            link = "https://www.nykaa.com" + product.find("a")["href"]
-            image = product.find("img")["src"] if product.find("img") else ""
-            product_list.append({"name": name, "price": price, "link": link, "image": image})
-        except AttributeError:
-            continue
+            response = requests.get(search_url, headers=headers, timeout=10)
+            if response.status_code != 200:
+                return []
+            
+            soup = BeautifulSoup(response.text, 'html.parser')
+            product_list = []
+            
+            for product in soup.find_all("div", class_="css-d5z3ro", limit=limit):
+                try:
+                    name = product.find("div", class_="css-xrzmfa").text.strip()
+                    price = product.find("span", class_="css-111z9ua").text.strip()
+                    link = "https://www.nykaa.com" + product.find("a")["href"]
+                    image = product.find("img")["src"] if product.find("img") else ""
+                    product_list.append({
+                        "name": name, 
+                        "price": price, 
+                        "link": link, 
+                        "image": image,
+                        "source": "Nykaa",
+                        "query": query.lower()
+                    })
+                except (AttributeError, KeyError):
+                    continue
+            
+            return product_list
+        except Exception as e:
+            print(f"Error scraping Nykaa: {e}")
+            return []
+
+    # 2. Purplle Scraper
+    def scrape_purplle(query, limit):
+        search_url = f"https://www.purplle.com/search?search={query.replace(' ', '+')}"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9"
+        }
+        
+        try:
+            response = requests.get(search_url, headers=headers, timeout=10)
+            if response.status_code != 200:
+                return []
+            
+            soup = BeautifulSoup(response.text, 'html.parser')
+            product_list = []
+            
+            for product in soup.find_all("div", class_="product-item", limit=limit):
+                try:
+                    name = product.find("div", class_="product-name").text.strip()
+                    price = product.find("span", class_="product-price").text.strip()
+                    link = "https://www.purplle.com" + product.find("a")["href"]
+                    image = product.find("img")["data-src"] if product.find("img") else ""
+                    product_list.append({
+                        "name": name, 
+                        "price": price, 
+                        "link": link, 
+                        "image": image,
+                        "source": "Purplle",
+                        "query": query.lower()
+                    })
+                except (AttributeError, KeyError):
+                    continue
+            
+            return product_list
+        except Exception as e:
+            print(f"Error scraping Purplle: {e}")
+            return []
+
+    # Scrape from all websites
+    per_site_limit = max(1, limit // 2)
+    all_products.extend(scrape_nykaa(query, per_site_limit))
+    all_products.extend(scrape_purplle(query, per_site_limit))
     
-    return product_list
+    return all_products[:limit]
 
 # Function to get skincare routine based on skin type
 def get_routine(skin_type):
     routines = {
-        "Normal": ["Gentle Cleanser", "Hydrating Toner", "Moisturizer", "Vitamin C Serum", "Sunscreen"],
-        "Dry": ["Hydrating Cleanser", "Hyaluronic Acid Serum", "Rich Moisturizer", "Facial Oil", "SPF 50 Sunscreen"],
-        "Oily": ["Oil-Free Cleanser", "Mattifying Toner", "Light Gel Moisturizer", "Niacinamide Serum", "SPF 50 Sunscreen"],
-        "Combination": ["Balancing Cleanser", "Hydrating Toner", "Lightweight Moisturizer", "Targeted Serum", "Sunscreen"],
-        "Sensitive": ["Fragrance-Free Cleanser", "Aloe Vera Gel", "Soothing Moisturizer", "Ceramide Cream", "Mineral Sunscreen"]
+        "Normal": {
+            "Cleanser": ["Gentle Milk Cleanser", "pH Balanced Foaming Cleanser"],
+            "Toner": ["Hydrating Toner with Hyaluronic Acid", "Rose Water Toner"],
+            "Moisturizer": ["Lightweight Gel Cream", "Ceramide Moisturizer"],
+            "Serum": ["Vitamin C Serum", "Niacinamide Serum"],
+            "Sunscreen": ["SPF 50 PA+++ Sunscreen", "Invisible Sunscreen Gel"]
+        },
+        "Dry": {
+            "Cleanser": ["Creamy Hydrating Cleanser", "Oil-based Cleanser"],
+            "Serum": ["Hyaluronic Acid Serum", "Squalane Serum"],
+            "Moisturizer": ["Rich Cream with Shea Butter", "Barrier Repair Cream"],
+            "Treatment": ["Facial Oil Blend", "Sleeping Mask"],
+            "Sunscreen": ["SPF 50 Cream Sunscreen", "Moisturizing Sunscreen"]
+        },
+        "Oily": {
+            "Cleanser": ["Salicylic Acid Cleanser", "Charcoal Detox Cleanser"],
+            "Toner": ["Witch Hazel Toner", "Tea Tree Toner"],
+            "Moisturizer": ["Oil-Free Gel Moisturizer", "Sebum Control Cream"],
+            "Serum": ["Niacinamide + Zinc Serum", "Retinol Serum"],
+            "Sunscreen": ["Matte Finish Sunscreen", "Oil-Control Sunscreen"]
+        },
+        "Combination": {
+            "Cleanser": ["Balancing Gel Cleanser", "Micellar Gel Wash"],
+            "Toner": ["pH Balancing Toner", "Lotion Toner"],
+            "Moisturizer": ["Dual Hydration Cream", "Zone-Control Moisturizer"],
+            "Serum": ["Hyaluronic Acid + Niacinamide", "Snail Mucin Essence"],
+            "Sunscreen": ["Lightweight Fluid Sunscreen", "Cream-Gel Hybrid Sunscreen"]
+        },
+        "Sensitive": {
+            "Cleanser": ["Fragrance-Free Cleanser", "Thermal Water Cleanser"],
+            "Soother": ["Aloe Vera Gel", "Centella Asiatica Cream"],
+            "Moisturizer": ["Ceramide Moisturizer", "Cicaplast Baume"],
+            "Treatment": ["Barrier Support Serum", "Redness Relief Essence"],
+            "Sunscreen": ["Mineral Zinc Oxide Sunscreen", "Physical Sunscreen"]
+        }
     }
-    return routines.get(skin_type, [])
+    return routines.get(skin_type, {})
 
-# Function to get product recommendations
+def calculate_product_weights(products, skin_concerns, acne_level, sensitivity):
+    weighted_products = []
+    for product in products:
+        weight = 1
+        
+        # Base weight from query match
+        if any(concern.lower() in product['query'] for concern in skin_concerns):
+            weight += 3
+        
+        # Boost for exact matches
+        name_lower = product['name'].lower()
+        if any(concern.lower() in name_lower for concern in skin_concerns):
+            weight += 5
+            
+        # Acne relevance
+        if acne_level >= 3 and any(term in name_lower for term in ['acne', 'bha', 'salicylic']):
+            weight += acne_level * 2
+            
+        # Sensitivity relevance
+        if sensitivity >= 3 and any(term in name_lower for term in ['calm', 'sensitive', 'fragrance-free']):
+            weight += sensitivity * 2
+            
+        weighted_products.append((product, weight))
+    
+    return weighted_products
+
 def get_recommendations(skin_concerns, routine_steps, skin_tone, acne_level, texture, sensitivity):
-    recommended_products = []
+    all_products = []
     
-    concern_products = {
-        "Acne": "Salicylic Acid Cleanser",
-        "Aging": "Retinol Serum",
-        "Sensitive": "Hypoallergenic Moisturizer",
-        "Dryness": "Hydrating Moisturizer"
-    }
+    # Get base routine products
+    for step, products in routine_steps.items():
+        for product_type in products:
+            all_products.extend(scrape_products(product_type, limit=2))
     
-    # Adjust search based on skin texture and sensitivity
-    if texture in ["Rough", "Bumpy", "Uneven"]:
-        routine_steps.append("Exfoliating Cleanser")
-    if sensitivity > 3:
-        routine_steps.append("Fragrance-Free Moisturizer")
+    # Add specialized queries
+    specialized_queries = []
+    if acne_level >= 2:
+        specialized_queries.extend([
+            f"{acne_level}% BHA Exfoliant",
+            "Acne Treatment Serum",
+            "Non-Comedogenic Moisturizer"
+        ])
     
-    for concern in skin_concerns:
-        if concern in concern_products:
-            recommended_products += scrape_products(concern_products[concern])
+    if sensitivity >= 2:
+        specialized_queries.extend([
+            "Fragrance-Free Cream",
+            "Hypoallergenic Serum",
+            "Soothing Repair Treatment"
+        ])
     
-    if not recommended_products:
-        for step in routine_steps:
-            recommended_products += scrape_products(step)
+    for query in specialized_queries:
+        all_products.extend(scrape_products(query, limit=2))
     
-    return recommended_products
+    # Calculate weights and randomize
+    weighted_products = calculate_product_weights(all_products, skin_concerns, acne_level, sensitivity)
+    
+    if not weighted_products:
+        return []
+    
+    # Separate products and weights
+    products, weights = zip(*weighted_products)
+    
+    # Select products with weighted randomness
+    selected_products = []
+    remaining_products = list(products)
+    remaining_weights = list(weights)
+    
+    # Ensure we get diverse categories
+    category_counts = defaultdict(int)
+    max_per_category = 4
+    
+    while len(selected_products) < 15 and remaining_products:
+        # Choose with weights
+        chosen_idx = choices(range(len(remaining_products)), weights=remaining_weights, k=1)[0]
+        chosen_product = remaining_products.pop(chosen_idx)
+        remaining_weights.pop(chosen_idx)
+        
+        # Determine category
+        category = "other"
+        name_lower = chosen_product['name'].lower()
+        if any(word in name_lower for word in ['cleanse', 'wash']):
+            category = "cleanser"
+        elif any(word in name_lower for word in ['serum', 'treatment', 'acid']):
+            category = "treatment"
+        elif any(word in name_lower for word in ['moisturiz', 'cream', 'lotion']):
+            category = "moisturizer"
+        elif 'sunscreen' in name_lower or 'spf' in name_lower:
+            category = "sunscreen"
+        
+        # Add if category not full
+        if category_counts[category] < max_per_category:
+            category_counts[category] += 1
+            selected_products.append(chosen_product)
+    
+    # Final shuffle
+    shuffle(selected_products)
+    return selected_products[:15]
 
-# Main Streamlit app
 def main():
     st.title("💖 Personalized Skin Care Routine")
     st.markdown("Upload a selfie or take a picture to get personalized skin care recommendations.")
@@ -81,106 +243,41 @@ def main():
     if image is not None:
         st.image(image, caption='Uploaded Image.', use_column_width=True)
 
-    skin_type = st.radio("Select your skin type:", ("Normal", "Dry", "Oily", "Combination", "Sensitive"))
-    skin_tone = st.selectbox("Select your skin tone:", ("Medium", "Olive", "Dark", "Deep"))
-    acne_level = st.slider("Acne Level (0-5):", 0, 5, 2)
-    texture = st.selectbox("Skin Texture:", ("Smooth", "Rough", "Bumpy", "Uneven"))
-    sensitivity = st.slider("Sensitivity (0-5):", 0, 5, 2)
-    skin_concerns = st.multiselect("Select your skin concerns:", ("Acne", "Aging", "Sensitive", "Dryness"))
-
-    if st.button("Get My Skin Care Routine"):
-        routine_steps = get_routine(skin_type)
-        recommended_products = get_recommendations(skin_concerns, routine_steps, skin_tone, acne_level, texture, sensitivity)
-
-        st.subheader("🌿 Your Recommended Skin Care Routine:")
-        st.write(", ".join(routine_steps))
-
-        st.subheader("🛍 Recommended Products:")
-        if recommended_products:
-            st.markdown("""
-            <style>
-                .product-container {
-                    display: grid;
-                    grid-auto-flow: row;
-                    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-                    gap: 20px;
-                    justify-content: center;
-                    align-items: start;
-                    width:full;
-                }
-                .product-card {
-                    border: 1px solid #e0e0e0;
-                    border-radius: 8px;
-                    padding: 15px;
-                    text-align: center;
-                    margin-bottom:20px;
-                    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-                    transition: transform 0.3s ease;
-                    background: white;
-                    max-width: 280px;
-                    width: 100%;
-                    display: flex;
-                    flex-direction: column;
-                    justify-content: space-between;
-                    overflow: hidden;
-                }
-                .product-card:hover {
-                    transform: scale(1.05);
-                }
-                .product-image {
-                    height: 180px;
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                    margin-bottom: 12px;
-                    overflow: hidden;
-                    background: #f9f9f9;
-                    border-radius: 6px;
-                }
-                .product-image img {
-                    max-width: 100%;
-                    max-height: 100%;
-                    object-fit: contain;
-                }
-                h4 {
-                    font-size: 16px;
-                    color: #333;
-                    font-weight: 600;
-                    min-height: 40px;
-                    display: -webkit-box;
-                    -webkit-line-clamp: 2;
-                    -webkit-box-orient: vertical;
-                    overflow: hidden;
-                }
-                .price {
-                    font-size: 18px;
-                    color: #f43397;
-                    font-weight: 700;
-                }
-                .view-btn {
-                    margin-top: 12px;
-                    padding: 8px 16px;
-                    background: #f43397;
-                    color: white;
-                    border-radius: 4px;
-                    font-size: 14px;
-                    font-weight: 600;
-                    display: inline-block;
-                    cursor: pointer;
-                    transition: background 0.3s ease;
-                }
-                .view-btn:hover {
-                    background: #c9277a;
-                }
-            </style>
-            """, unsafe_allow_html=True)
-
-            st.markdown('<div class="product-container">', unsafe_allow_html=True)
-            for product in recommended_products:
-                st.markdown(f'<div class="product-card">\n<a href="{product["link"]}" target="_blank">\n<div class="product-image">\n<img src="{product["image"]}" alt="{product["name"]}"></div>\n<h4>{product["name"]}</h4>\n<p class="price">{product["price"]}</p>\n<div class="view-btn">View Product</div></a></div>', unsafe_allow_html=True)
-            st.markdown('</div>', unsafe_allow_html=True)
-        else:
-            st.write("No products found.")
+    st.markdown("Get product recommendations tailored to your skin needs")
+    
+    with st.sidebar:
+        st.header("Your Skin Profile")
+        skin_type = st.radio("Skin Type:", ("Normal", "Dry", "Oily", "Combination", "Sensitive"))
+        skin_tone = st.selectbox("Skin Tone:", ("Light", "Medium", "Olive", "Tan", "Dark", "Deep"))
+        acne_level = st.slider("Acne Level (0-5):", 0, 5, 1)
+        texture = st.selectbox("Skin Texture:", ("Smooth", "Rough", "Bumpy", "Uneven"))
+        sensitivity = st.slider("Sensitivity (0-5):", 0, 5, 1)
+        skin_concerns = st.multiselect("Main Concerns:", 
+                                     ["Acne", "Aging", "Dryness", "Redness", 
+                                      "Hyperpigmentation", "Pores", "Dullness"])
+    
+    if st.button("Get Recommendations"):
+        with st.spinner('Finding the best products for your skin...'):
+            routine_steps = get_routine(skin_type)
+            products = get_recommendations(skin_concerns, routine_steps, skin_tone, acne_level, texture, sensitivity)
+            
+            st.subheader("✨ Your Personalized Routine")
+            for step, items in routine_steps.items():
+                st.markdown(f"**{step}:** {', '.join(items)}")
+            
+            st.subheader("🛍 Recommended Products")
+            if not products:
+                st.warning("Couldn't find matching products. Try adjusting your filters.")
+            else:
+                cols = st.columns(3)
+                for idx, product in enumerate(products):
+                    with cols[idx % 3]:
+                        st.image(product.get('image', ''), width=150)
+                        st.markdown(f"**{product['name']}**")
+                        st.markdown(f"*{product['price']}*")
+                        st.markdown(f"*{product['source']}*")
+                        st.markdown(f"[View Product]({product['link']})", unsafe_allow_html=True)
+                        st.markdown("---")
 
 if __name__ == "__main__":
     main()
