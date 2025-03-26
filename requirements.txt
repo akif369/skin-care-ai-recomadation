@@ -1,0 +1,8 @@
+streamlit
+openai
+langchain
+requests
+beautifulsoup4
+opencv-python
+numpy
+pillow
