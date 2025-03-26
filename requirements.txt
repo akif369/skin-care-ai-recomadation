@@ -7,3 +7,4 @@ opencv-python
 numpy
 pillow
 tensorflow
+scikit-learn

@@ -3,8 +3,77 @@ import streamlit as st
 import requests
 from bs4 import BeautifulSoup
 from collections import defaultdict
+import cv2
+import numpy as np
+from sklearn.cluster import KMeans
+from PIL import Image
 
-# Function to scrape skincare products from multiple websites
+# Skin tone classification parameters
+SKIN_TONES = {
+    "Light": (200, 128, 128),
+    "Medium": (150, 130, 140),
+    "Olive": (130, 140, 150),
+    "Tan": (110, 150, 160),
+    "Dark": (80, 160, 170),
+    "Deep": (50, 170, 180),
+}
+
+def classify_skin_tone(avg_color):
+    """Classify skin tone based on LAB color values."""
+    min_dist = float("inf")
+    best_match = "Unknown"
+    for tone, lab_values in SKIN_TONES.items():
+        dist = np.linalg.norm(np.array(avg_color) - np.array(lab_values))
+        if dist < min_dist:
+            min_dist = dist
+            best_match = tone
+    return best_match
+
+def extract_skin_region(image):
+    """Detect face and extract skin pixels."""
+    # Convert to numpy array
+    image = np.array(image)
+    # Convert from RGB to BGR (OpenCV format)
+    image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+    
+    face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(100, 100))
+
+    if len(faces) == 0:
+        return None  # No face detected
+    
+    x, y, w, h = faces[0]  # Take the first detected face
+    face_roi = image[y:y+h, x:x+w]  # Extract face region
+    
+    # Convert to LAB color space for better skin tone detection
+    lab = cv2.cvtColor(face_roi, cv2.COLOR_BGR2LAB)
+    
+    # Extract only skin pixels by removing high variations (eyes, lips, etc.)
+    l, a, b = cv2.split(lab)
+    skin_mask = (a > 120) & (b > 130)  # Simple threshold for skin detection
+    skin_pixels = lab[skin_mask]
+
+    if len(skin_pixels) == 0:
+        return None  # No skin detected
+    
+    return skin_pixels
+
+def detect_skin_tone(image):
+    """Main function to detect skin tone from an image."""
+    skin_pixels = extract_skin_region(image)
+    if skin_pixels is None:
+        return None
+    
+    # Use KMeans to find the dominant skin color
+    kmeans = KMeans(n_clusters=1, random_state=42)
+    kmeans.fit(skin_pixels)
+    avg_color = kmeans.cluster_centers_[0]
+
+    # Classify into predefined skin tones
+    skin_tone = classify_skin_tone(avg_color)
+    return skin_tone
+
 def scrape_products(query, limit=3):
     all_products = []
     
@@ -92,7 +161,6 @@ def scrape_products(query, limit=3):
     
     return all_products[:limit]
 
-# Function to get skincare routine based on skin type
 def get_routine(skin_type):
     routines = {
         "Normal": {
@@ -183,6 +251,20 @@ def get_recommendations(skin_concerns, routine_steps, skin_tone, acne_level, tex
             "Soothing Repair Treatment"
         ])
     
+    # Skin tone specific products
+    if skin_tone in ["Dark", "Deep"]:
+        specialized_queries.extend([
+            "Dark Spot Corrector",
+            "Hyperpigmentation Treatment",
+            "Even Tone Serum"
+        ])
+    elif skin_tone in ["Light", "Medium"]:
+        specialized_queries.extend([
+            "Brightening Serum",
+            "Vitamin C Treatment",
+            "Glow Boosting Cream"
+        ])
+    
     for query in specialized_queries:
         all_products.extend(scrape_products(query, limit=2))
     
@@ -235,49 +317,90 @@ def main():
     st.title("💖 Personalized Skin Care Routine")
     st.markdown("Upload a selfie or take a picture to get personalized skin care recommendations.")
 
-    uploaded_file = st.file_uploader("Upload a selfie", type=["jpg", "jpeg", "png"])
-    camera_image = st.camera_input("Or take a picture")
+    # Initialize session state for skin tone
+    if 'skin_tone' not in st.session_state:
+        st.session_state.skin_tone = "Medium"
+
+    # Image upload in main area - with unique keys
+    uploaded_file = st.file_uploader("Upload a selfie", 
+                                   type=["jpg", "jpeg", "png"], 
+                                   key="file_uploader_unique")
+    camera_image = st.camera_input("Or take a picture", 
+                                 key="camera_input_unique")
     
     image = uploaded_file if uploaded_file else camera_image
     
     if image is not None:
-        st.image(image, caption='Uploaded Image.', use_column_width=True)
+        try:
+            img = Image.open(image)
+            st.image(img, caption='Uploaded Image.', use_column_width=True)
+            
+            # Detect and update skin tone
+            detected_tone = detect_skin_tone(img)
+            if detected_tone:
+                st.session_state.skin_tone = detected_tone
+                st.success(f"Detected skin tone: {detected_tone}")
+            else:
+                st.warning("Could not detect a face in the image. Please ensure your face is clearly visible.")
+        except Exception as e:
+            st.error(f"Error processing image: {str(e)}")
 
-    st.markdown("Get product recommendations tailored to your skin needs")
-    
+    # Sidebar form
     with st.sidebar:
         st.header("Your Skin Profile")
-        skin_type = st.radio("Skin Type:", ("Normal", "Dry", "Oily", "Combination", "Sensitive"))
-        skin_tone = st.selectbox("Skin Tone:", ("Light", "Medium", "Olive", "Tan", "Dark", "Deep"))
-        acne_level = st.slider("Acne Level (0-5):", 0, 5, 1)
-        texture = st.selectbox("Skin Texture:", ("Smooth", "Rough", "Bumpy", "Uneven"))
-        sensitivity = st.slider("Sensitivity (0-5):", 0, 5, 1)
-        skin_concerns = st.multiselect("Main Concerns:", 
-                                     ["Acne", "Aging", "Dryness", "Redness", 
-                                      "Hyperpigmentation", "Pores", "Dullness"])
-    
-    if st.button("Get Recommendations"):
+        skin_type = st.radio("Skin Type:", 
+                            ("Normal", "Dry", "Oily", "Combination", "Sensitive"),
+                            key="skin_type_radio")
+        
+        # Auto-updated skin tone selection
+        skin_tone = st.selectbox(
+            "Skin Tone:", 
+            ("Light", "Medium", "Olive", "Tan", "Dark", "Deep"),
+            index=["Light", "Medium", "Olive", "Tan", "Dark", "Deep"].index(st.session_state.skin_tone),
+            key="skin_tone_select"
+        )
+        
+        acne_level = st.slider("Acne Level (0-5):", 0, 5, 2, key="acne_slider")
+        texture = st.selectbox("Skin Texture:", 
+                             ("Smooth", "Rough", "Bumpy", "Uneven"),
+                             key="texture_select")
+        sensitivity = st.slider("Sensitivity (0-5):", 0, 5, 2, key="sensitivity_slider")
+        skin_concerns = st.multiselect(
+            "Skin Concerns:", 
+            ["Acne", "Aging", "Dryness", "Redness", "Hyperpigmentation"],
+            key="concerns_multiselect"
+        )
+
+    if st.button("Get My Skin Care Routine", key="recommend_button"):
         with st.spinner('Finding the best products for your skin...'):
             routine_steps = get_routine(skin_type)
-            products = get_recommendations(skin_concerns, routine_steps, skin_tone, acne_level, texture, sensitivity)
-            
-            st.subheader("✨ Your Personalized Routine")
+            products = get_recommendations(
+                skin_concerns, routine_steps, skin_tone, 
+                acne_level, texture, sensitivity
+            )
+
+            # Display results
+            st.subheader("🌿 Your Recommended Routine")
             for step, items in routine_steps.items():
                 st.markdown(f"**{step}:** {', '.join(items)}")
-            
-            st.subheader("🛍 Recommended Products")
+
+            st.subheader("✨ Recommended Products")
             if not products:
-                st.warning("Couldn't find matching products. Try adjusting your filters.")
+                st.warning("No products found. Try adjusting your filters.")
             else:
                 cols = st.columns(3)
                 for idx, product in enumerate(products):
                     with cols[idx % 3]:
-                        st.image(product.get('image', ''), width=150)
-                        st.markdown(f"**{product['name']}**")
-                        st.markdown(f"*{product['price']}*")
-                        st.markdown(f"*{product['source']}*")
-                        st.markdown(f"[View Product]({product['link']})", unsafe_allow_html=True)
-                        st.markdown("---")
-
+                        st.markdown(f"""
+                        <div style="border:1px solid #e0e0e0; border-radius:8px; padding:15px; margin-bottom:20px; text-align:center;">
+                            <img src="{product['image']}" style="max-height:150px; width:auto; border-radius:4px; margin-bottom:10px;">
+                            <h4 style="margin:5px 0; font-size:16px;">{product['name']}</h4>
+                            <p style="color:#f43397; font-weight:bold; margin:5px 0;">{product['price']}</p>
+                            <a href="{product['link']}" target="_blank" style="background:#f43397; color:white; padding:8px 12px; border-radius:4px; text-decoration:none; display:inline-block;">
+                                View Product
+                            </a>
+                        </div>
+                        """, unsafe_allow_html=True)
+                        
 if __name__ == "__main__":
-    main()
+    main() 
