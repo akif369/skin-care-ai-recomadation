@@ -6,5 +6,5 @@ beautifulsoup4
 opencv-python
 numpy
 pillow
-tensorflow
+scikit-image
 scikit-learn

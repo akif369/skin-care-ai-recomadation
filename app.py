@@ -1,14 +1,108 @@
 from random import shuffle, choices
 import streamlit as st
+from skimage.feature import local_binary_pattern
+from skimage import filters
 import requests
 from bs4 import BeautifulSoup
 from collections import defaultdict
 import cv2
 import numpy as np
+import streamlit.components.v1 as components
 from sklearn.cluster import KMeans
 from PIL import Image
+import sqlite3
+from passlib.hash import bcrypt
 
-# Skin tone classification parameters
+# ------------------ Database Setup ------------------
+def init_db():
+    """Initialize database and create users table"""
+    conn = sqlite3.connect('users.db')
+    c = conn.cursor()
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            username TEXT PRIMARY KEY,
+            password_hash TEXT NOT NULL
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+def create_user(username, password):
+    """Create new user with hashed password"""
+    hashed = bcrypt.hash(password)
+    conn = sqlite3.connect('users.db')
+    c = conn.cursor()
+    try:
+        c.execute('INSERT INTO users VALUES (?, ?)', (username, hashed))
+        conn.commit()
+        return True
+    except sqlite3.IntegrityError:
+        return False  # Username already exists
+    finally:
+        conn.close()
+
+def verify_user(username, password):
+    """Verify user credentials"""
+    conn = sqlite3.connect('users.db')
+    c = conn.cursor()
+    c.execute('SELECT password_hash FROM users WHERE username = ?', (username,))
+    result = c.fetchone()
+    conn.close()
+    if result:
+        return bcrypt.verify(password, result[0])
+    return False
+
+# ------------------ Authentication Views ------------------
+def show_login():
+    """Display login form"""
+    st.title("🔐 Login")
+    
+    with st.form("login_form"):
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
+        submit = st.form_submit_button("Login")
+        
+        if submit:
+            if verify_user(username, password):
+                st.session_state.logged_in = True
+                st.session_state.username = username
+                st.success("Logged in successfully!")
+                st.rerun()
+            else:
+                st.error("Invalid username or password")
+    
+    if st.button("Create new account"):
+        st.session_state.page = "register"
+        st.rerun()
+
+def show_register():
+    """Display registration form"""
+    st.title("📝 Create Account")
+    
+    with st.form("register_form"):
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
+        confirm_password = st.text_input("Confirm Password", type="password")
+        submit = st.form_submit_button("Register")
+        
+        if submit:
+            if password != confirm_password:
+                st.error("Passwords do not match!")
+            elif len(password) < 6:
+                st.error("Password must be at least 6 characters!")
+            else:
+                if create_user(username, password):
+                    st.success("Account created successfully! Please login.")
+                    st.session_state.page = "login"
+                    st.rerun()
+                else:
+                    st.error("Username already exists!")
+
+    if st.button("Back to Login"):
+        st.session_state.page = "login"
+        st.rerun()
+
+# ------------------ Skin Analysis Functions ------------------
 SKIN_TONES = {
     "Light": (200, 128, 128),
     "Medium": (150, 130, 140),
@@ -19,7 +113,7 @@ SKIN_TONES = {
 }
 
 def classify_skin_tone(avg_color):
-    """Classify skin tone based on LAB color values."""
+    """Classify skin tone based on LAB color values"""
     min_dist = float("inf")
     best_match = "Unknown"
     for tone, lab_values in SKIN_TONES.items():
@@ -30,10 +124,8 @@ def classify_skin_tone(avg_color):
     return best_match
 
 def extract_skin_region(image):
-    """Detect face and extract skin pixels."""
-    # Convert to numpy array
+    """Detect face and extract skin pixels"""
     image = np.array(image)
-    # Convert from RGB to BGR (OpenCV format)
     image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
     
     face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
@@ -41,39 +133,69 @@ def extract_skin_region(image):
     faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(100, 100))
 
     if len(faces) == 0:
-        return None  # No face detected
+        return None
     
-    x, y, w, h = faces[0]  # Take the first detected face
-    face_roi = image[y:y+h, x:x+w]  # Extract face region
-    
-    # Convert to LAB color space for better skin tone detection
+    x, y, w, h = faces[0]
+    face_roi = image[y:y+h, x:x+w]
     lab = cv2.cvtColor(face_roi, cv2.COLOR_BGR2LAB)
     
-    # Extract only skin pixels by removing high variations (eyes, lips, etc.)
     l, a, b = cv2.split(lab)
-    skin_mask = (a > 120) & (b > 130)  # Simple threshold for skin detection
+    skin_mask = (a > 120) & (b > 130)
     skin_pixels = lab[skin_mask]
 
-    if len(skin_pixels) == 0:
-        return None  # No skin detected
-    
-    return skin_pixels
+    return skin_pixels if len(skin_pixels) > 0 else None
 
 def detect_skin_tone(image):
-    """Main function to detect skin tone from an image."""
+    """Main function to detect skin tone from an image"""
     skin_pixels = extract_skin_region(image)
     if skin_pixels is None:
         return None
     
-    # Use KMeans to find the dominant skin color
     kmeans = KMeans(n_clusters=1, random_state=42)
     kmeans.fit(skin_pixels)
     avg_color = kmeans.cluster_centers_[0]
+    return classify_skin_tone(avg_color)
 
-    # Classify into predefined skin tones
-    skin_tone = classify_skin_tone(avg_color)
-    return skin_tone
+def detect_acne_severity(image):
+    """Acne detection with normalized density calculation"""
+    try:
+        if isinstance(image, Image.Image):
+            image = np.array(image)
+            
+        if len(image.shape) == 3:
+            gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+        else:
+            gray = image
+            
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+        enhanced = clahe.apply(gray)
+        filtered = cv2.bilateralFilter(enhanced, 9, 75, 75)
+        
+        blur1 = cv2.GaussianBlur(filtered, (5,5), 0)
+        blur2 = cv2.GaussianBlur(filtered, (9,9), 0)
+        dog = blur1 - blur2
+        
+        thresh = cv2.adaptiveThreshold(dog, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                     cv2.THRESH_BINARY_INV, 11, 2)
+        
+        kernel = np.ones((3,3), np.uint8)
+        cleaned = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel, iterations=1)
+        
+        spot_area = np.sum(cleaned)/255
+        total_area = gray.shape[0] * gray.shape[1]
+        normalized_density = (spot_area / total_area) * 100
+        
+        if normalized_density < 10: return 0
+        elif normalized_density < 40: return 1
+        elif normalized_density < 55: return 2
+        elif normalized_density < 75: return 3
+        elif normalized_density < 90: return 4
+        else: return 5
+    except Exception as e:
+        print(f"Acne detection error: {e}")
+        return 0
 
+# ------------------ Product Recommendations ------------------
 def scrape_products(query, limit=3):
     all_products = []
     
@@ -161,6 +283,8 @@ def scrape_products(query, limit=3):
     
     return all_products[:limit]
 
+   
+
 def get_routine(skin_type):
     routines = {
         "Normal": {
@@ -200,6 +324,7 @@ def get_routine(skin_type):
         }
     }
     return routines.get(skin_type, {})
+
 
 def calculate_product_weights(products, skin_concerns, acne_level, sensitivity):
     weighted_products = []
@@ -313,65 +438,76 @@ def get_recommendations(skin_concerns, routine_steps, skin_tone, acne_level, tex
     shuffle(selected_products)
     return selected_products[:15]
 
-def main():
-    st.title("💖 Personalized Skin Care Routine")
-    st.markdown("Upload a selfie or take a picture to get personalized skin care recommendations.")
+# ------------------ Main Application ------------------
+def main_app():
+     # Header with title and logout button
+    header_col1, header_col2 = st.columns([4, 1])
+    with header_col1:
+        st.title("💖 Personalized Skin Care Routine")
+    with header_col2:
+        st.write("")  # Vertical spacer
+        st.write("")  # Vertical spacer
+        if st.button("🚪 Logout"):
+            st.session_state.logged_in = False
+            st.session_state.username = None
+            st.rerun()
 
-    # Initialize session state for skin tone
+    st.markdown(f"Welcome, {st.session_state.username}! Upload a selfie or take a picture to begin.")
+
+    # Initialize session state
     if 'skin_tone' not in st.session_state:
         st.session_state.skin_tone = "Medium"
+    if 'acne_level' not in st.session_state:
+        st.session_state.acne_level = 2
+    if 'image_source' not in st.session_state:
+        st.session_state.image_source = None
 
-    # Image upload in main area - with unique keys
-    uploaded_file = st.file_uploader("Upload a selfie", 
-                                   type=["jpg", "jpeg", "png"], 
-                                   key="file_uploader_unique")
-    camera_image = st.camera_input("Or take a picture", 
-                                 key="camera_input_unique")
-    
+    # Image upload
+    uploaded_file = st.file_uploader("Upload a selfie", type=["jpg", "jpeg", "png"], key="file_uploader")
+    camera_image = st.camera_input("Or take a picture", key="camera_input")
     image = uploaded_file if uploaded_file else camera_image
-    
+
     if image is not None:
         try:
             img = Image.open(image)
             st.image(img, caption='Uploaded Image.', use_column_width=True)
             
-            # Detect and update skin tone
             detected_tone = detect_skin_tone(img)
             if detected_tone:
                 st.session_state.skin_tone = detected_tone
                 st.success(f"Detected skin tone: {detected_tone}")
             else:
-                st.warning("Could not detect a face in the image. Please ensure your face is clearly visible.")
+                st.warning("Could not detect face. Please try another photo.")
+            
+            acne_level = detect_acne_severity(img)
+            st.session_state.acne_level = acne_level
+            st.info(f"Detected acne severity: {acne_level}/5")
+
         except Exception as e:
             st.error(f"Error processing image: {str(e)}")
 
     # Sidebar form
     with st.sidebar:
         st.header("Your Skin Profile")
-        skin_type = st.radio("Skin Type:", 
-                            ("Normal", "Dry", "Oily", "Combination", "Sensitive"),
-                            key="skin_type_radio")
+        skin_type = st.radio("Skin Type:", ("Normal", "Dry", "Oily", "Combination", "Sensitive"))
         
-        # Auto-updated skin tone selection
         skin_tone = st.selectbox(
-            "Skin Tone:", 
+            "Skin Tone:",
             ("Light", "Medium", "Olive", "Tan", "Dark", "Deep"),
-            index=["Light", "Medium", "Olive", "Tan", "Dark", "Deep"].index(st.session_state.skin_tone),
-            key="skin_tone_select"
+            index=["Light", "Medium", "Olive", "Tan", "Dark", "Deep"].index(st.session_state.skin_tone)
         )
         
-        acne_level = st.slider("Acne Level (0-5):", 0, 5, 2, key="acne_slider")
-        texture = st.selectbox("Skin Texture:", 
-                             ("Smooth", "Rough", "Bumpy", "Uneven"),
-                             key="texture_select")
-        sensitivity = st.slider("Sensitivity (0-5):", 0, 5, 2, key="sensitivity_slider")
+        acne_level = st.slider("Acne Level (0-5):", 0, 5, st.session_state.acne_level)
+        texture = st.selectbox("Skin Texture:", ("Smooth", "Rough", "Bumpy", "Uneven"))
+        sensitivity = st.slider("Sensitivity (0-5):", 0, 5, 2)
         skin_concerns = st.multiselect(
-            "Skin Concerns:", 
-            ["Acne", "Aging", "Dryness", "Redness", "Hyperpigmentation"],
-            key="concerns_multiselect"
+            "Skin Concerns:",
+            ["Acne", "Aging", "Dryness", "Redness", "Hyperpigmentation"]
         )
 
-    if st.button("Get My Skin Care Routine", key="recommend_button"):
+    
+
+    if st.button("Get My Skin Care Routine"):
         with st.spinner('Finding the best products for your skin...'):
             routine_steps = get_routine(skin_type)
             products = get_recommendations(
@@ -379,15 +515,12 @@ def main():
                 acne_level, texture, sensitivity
             )
 
-            # Display results
             st.subheader("🌿 Your Recommended Routine")
             for step, items in routine_steps.items():
                 st.markdown(f"**{step}:** {', '.join(items)}")
 
             st.subheader("✨ Recommended Products")
-            if not products:
-                st.warning("No products found. Try adjusting your filters.")
-            else:
+            if products:
                 cols = st.columns(3)
                 for idx, product in enumerate(products):
                     with cols[idx % 3]:
@@ -396,11 +529,31 @@ def main():
                             <img src="{product['image']}" style="max-height:150px; width:auto; border-radius:4px; margin-bottom:10px;">
                             <h4 style="margin:5px 0; font-size:16px;">{product['name']}</h4>
                             <p style="color:#f43397; font-weight:bold; margin:5px 0;">{product['price']}</p>
-                            <a href="{product['link']}" target="_blank" style="background:#f43397; color:white; padding:8px 12px; border-radius:4px; text-decoration:none; display:inline-block;">
+                            <a href="{product['link']}" target="_blank" style="background:#f43397; color:white; padding:8px 12px; border-radius:4px; text-decoration:none;">
                                 View Product
                             </a>
                         </div>
                         """, unsafe_allow_html=True)
-                        
+            else:
+                st.warning("No products found. Try adjusting your filters.")
+
+# ------------------ Main Function ------------------
+def main():
+    init_db()
+    
+    if 'logged_in' not in st.session_state:
+        st.session_state.logged_in = False
+    if 'page' not in st.session_state:
+        st.session_state.page = "login"
+    
+    if not st.session_state.logged_in:
+        if st.session_state.page == "login":
+            show_login()
+        else:
+            show_register()
+        return
+    
+    main_app()
+
 if __name__ == "__main__":
-    main() 
+    main()
