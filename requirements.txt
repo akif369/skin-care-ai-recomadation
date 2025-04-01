@@ -8,3 +8,5 @@ numpy
 pillow
 scikit-image
 scikit-learn
+bcrypt
+passlib

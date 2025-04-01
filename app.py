@@ -538,6 +538,34 @@ def main_app():
                 st.warning("No products found. Try adjusting your filters.")
 
 # ------------------ Main Function ------------------
+def show_homepage():
+    """Display welcome page after login"""
+    st.title("Welcome to SkinCareAI! 🌸")
+    st.markdown("""
+    ### Your Personalized Skincare Companion
+    
+    **Discover Your Perfect Routine**  
+    Our AI-powered analysis helps you understand your skin's unique needs and recommends products tailored just for you.
+    
+    ### How It Works:
+    1. **Upload a Selfie** - Our technology analyzes your skin tone, texture, and concerns.
+    2. **Get Insights** - Receive detailed information about your skin type and areas that need attention.
+    3. **Personalized Recommendations** - Get a curated list of products from top brands that match your skin profile.
+    
+    ### Why Choose Us?
+    - 🔬 Scientifically-backed analysis
+    - 💄 Curated recommendations from trusted brands
+    - 🌱 Suitable for all skin types and tones
+    - 🔒 Privacy-first approach - your data stays yours
+    
+    Ready to begin your skincare journey?
+    """)
+    
+    if st.button("✨ Try AI Recommendation"):
+        st.session_state.page = "main_app"
+        st.rerun()
+
+# ------------------ Modified Main Function ------------------
 def main():
     init_db()
     
@@ -553,7 +581,35 @@ def main():
             show_register()
         return
     
-    main_app()
+    # After login routing
+    if st.session_state.page == "home":
+        show_homepage()
+    elif st.session_state.page == "main_app":
+        main_app()
 
+# ------------------ Modified Login Function ------------------
+def show_login():
+    """Display login form"""
+    st.title("🔐 Login")
+    
+    with st.form("login_form"):
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
+        submit = st.form_submit_button("Login")
+        
+        if submit:
+            if verify_user(username, password):
+                st.session_state.logged_in = True
+                st.session_state.username = username
+                st.session_state.page = "home"  # Redirect to homepage
+                st.success("Logged in successfully!")
+                st.rerun()
+            else:
+                st.error("Invalid username or password")
+    
+    if st.button("Create new account"):
+        st.session_state.page = "register"
+        st.rerun()
+        
 if __name__ == "__main__":
     main()
